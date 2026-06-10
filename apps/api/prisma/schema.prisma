@@ -62,6 +62,13 @@ model Tenant {
   communityPosts       CommunityPost[]
   communityComments    CommunityComment[]
 
+  // Commerce depth (Wave 1a)
+  productVariants      ProductVariant[]
+  coupons              Coupon[]
+  reviews              Review[]
+  wishlistItems        WishlistItem[]
+  refunds              Refund[]
+
   @@map("tenants")
 }
 
@@ -687,6 +694,9 @@ model Product {
 
   tenant      Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   orderItems  OrderItem[]
+  variants      ProductVariant[]
+  reviews       Review[]
+  wishlistItems WishlistItem[]
 
   @@unique([tenantId, slug])
   @@index([tenantId, status])
@@ -703,6 +713,8 @@ model Order {
   customerName  String?
   status        OrderStatus @default(PENDING)
   subtotal      Int         @default(0)
+  discount      Int         @default(0)
+  couponCode    String?
   total         Int         @default(0)
   currency      String      @default("INR")
   provider      String      @default("mock")
@@ -713,6 +725,7 @@ model Order {
 
   tenant        Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   items         OrderItem[]
+  refunds       Refund[]
 
   @@index([tenantId, status])
   @@index([tenantId, createdAt])
@@ -725,6 +738,7 @@ model OrderItem {
   tenantId      String
   orderId       String
   productId     String?
+  variantId     String?
   titleSnapshot String
   unitPrice     Int
   quantity      Int      @default(1)
@@ -737,6 +751,123 @@ model OrderItem {
   @@index([tenantId])
   @@index([orderId])
   @@map("order_items")
+}
+
+// ---- Commerce depth (Wave 1a): variants, coupons, reviews, wishlist, refunds ----
+
+enum CouponType {
+  PERCENT
+  FIXED
+}
+
+enum ReviewStatus {
+  PENDING
+  PUBLISHED
+  REJECTED
+}
+
+enum RefundStatus {
+  REQUESTED
+  APPROVED
+  REJECTED
+  REFUNDED
+}
+
+// A purchasable variant of a product (e.g. size/colour). `priceDelta` is added to the
+// product's base price (minor units). `stock` null = untracked.
+model ProductVariant {
+  id         String   @id @default(cuid())
+  tenantId   String
+  productId  String
+  sku        String?
+  name       String
+  priceDelta Int      @default(0)
+  stock      Int?
+  createdAt  DateTime @default(now())
+
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([productId])
+  @@map("product_variants")
+}
+
+// Discount code. PERCENT value is 0..100; FIXED value is minor units. Redemptions are
+// capped by `maxRedemptions` (null = unlimited) and `expiresAt`.
+model Coupon {
+  id             String     @id @default(cuid())
+  tenantId       String
+  code           String
+  type           CouponType @default(PERCENT)
+  value          Int        @default(0)
+  minSubtotal    Int        @default(0)
+  maxRedemptions Int?
+  redeemedCount  Int        @default(0)
+  expiresAt      DateTime?
+  active         Boolean    @default(true)
+  createdAt      DateTime   @default(now())
+
+  tenant         Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@map("coupons")
+}
+
+// Product rating/review. `rating` is 1..5. Moderation via `status`.
+model Review {
+  id         String       @id @default(cuid())
+  tenantId   String
+  productId  String
+  userId     String?
+  authorName String?
+  rating     Int
+  body       String?      @db.Text
+  status     ReviewStatus @default(PUBLISHED)
+  createdAt  DateTime     @default(now())
+
+  tenant     Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  product    Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([productId, status])
+  @@map("reviews")
+}
+
+// A user's saved product. Unique per (tenant, user, product).
+model WishlistItem {
+  id        String   @id @default(cuid())
+  tenantId  String
+  userId    String
+  productId String
+  createdAt DateTime @default(now())
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, userId, productId])
+  @@index([tenantId, userId])
+  @@map("wishlist_items")
+}
+
+// A refund/return request against an order. `amount` in minor units.
+model Refund {
+  id        String       @id @default(cuid())
+  tenantId  String
+  orderId   String
+  amount    Int
+  reason    String?
+  status    RefundStatus @default(REQUESTED)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  tenant    Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  order     Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([orderId])
+  @@map("refunds")
 }
 
 
