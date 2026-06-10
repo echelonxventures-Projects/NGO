@@ -1,0 +1,947 @@
+// DXP Platform — core Prisma schema (Phase 0)
+// Multi-tenant via `tenantId` discriminator on every tenant-owned model.
+// Isolation is enforced centrally (Prisma client extension + isolation guard).
+// Feature modules (LMS, commerce, community, ...) extend this in later phases.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// Tenancy & configuration
+// ============================================================
+
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+  PENDING
+}
+
+model Tenant {
+  id        String       @id @default(cuid())
+  slug      String       @unique // used for <slug>.basedomain subdomains
+  name      String
+  status    TenantStatus @default(ACTIVE)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  domains   Domain[]
+  branding  TenantBranding?
+  config    TenantConfig?
+  users     User[]
+  roles     Role[]
+  content   Content[]
+  donations Donation[]
+  donors    Donor[]
+  subscriptions    Subscription[]
+  receipts         Receipt[]
+  contentRevisions ContentRevision[]
+  fxRates              FxRate[]
+  taxRules             TaxRule[]
+  certificateTemplates CertificateTemplate[]
+  certificates         Certificate[]
+  courses              Course[]
+  courseModules        CourseModule[]
+  lessons              Lesson[]
+  enrollments          Enrollment[]
+  lessonProgress       LessonProgress[]
+  products             Product[]
+  orders               Order[]
+  orderItems           OrderItem[]
+  events               Event[]
+  eventRegistrations   EventRegistration[]
+  volunteerOpportunities VolunteerOpportunity[]
+  volunteerSignups     VolunteerSignup[]
+  membershipPlans      MembershipPlan[]
+  memberships          Membership[]
+  communityPosts       CommunityPost[]
+  communityComments    CommunityComment[]
+
+  @@map("tenants")
+}
+
+enum DomainStatus {
+  PENDING
+  VERIFIED
+  FAILED
+}
+
+// Custom domains and subdomains mapped to a tenant. Resolution matches `hostname`.
+model Domain {
+  id         String       @id @default(cuid())
+  tenantId   String
+  hostname   String       @unique // e.g. vashundharafoundation.org or ngo.platform.local
+  isPrimary  Boolean      @default(false)
+  status     DomainStatus @default(PENDING)
+  verifyToken String?     // DNS TXT verification token
+  createdAt  DateTime     @default(now())
+
+  tenant     Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("domains")
+}
+
+// White-label branding. Typed columns for common fields + JSON for open-ended extension.
+model TenantBranding {
+  id           String   @id @default(cuid())
+  tenantId     String   @unique
+  shortName    String?
+  tagline      String?
+  logoUrl      String?
+  darkLogoUrl  String?
+  faviconUrl   String?
+  primaryColor String?  // e.g. #1B5E20
+  accentColor  String?
+  fontFamily   String?
+  socialLinks  Json     @default("{}") // { twitter, facebook, instagram, linkedin, youtube }
+  extra        Json     @default("{}") // any additional no-hardcode branding fields
+  updatedAt    DateTime @updatedAt
+
+  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("tenant_branding")
+}
+
+// Per-tenant runtime config: feature flags, menus, provider overrides (encrypted later).
+model TenantConfig {
+  id          String   @id @default(cuid())
+  tenantId    String   @unique
+  features    Json     @default("{}") // feature flags: { donations: true, lms: false, ... }
+  menus       Json     @default("{}") // navigation structure
+  settings    Json     @default("{}") // arbitrary tenant settings
+  providers   Json     @default("{}") // per-tenant provider overrides (payment keys, etc.)
+  // Legal / tax data used on receipts & 80G certificates (no-hardcode):
+  // { legalName, address, pan, email, phone, reg80GNumber, reg80GDate, receiptPrefix }
+  legal       Json     @default("{}")
+  // Currency: base currency + the currencies a tenant accepts.
+  baseCurrency      String  @default("INR")
+  enabledCurrencies String[] @default(["INR"])
+  // Tax: whether displayed prices include tax, and the fallback region for auto-detect.
+  taxInclusive      Boolean @default(false)
+  defaultCountry    String  @default("IN")
+  defaultRegion     String? // state/province code used when address/geo absent
+  defaultLocale String @default("en")
+  updatedAt   DateTime @updatedAt
+
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("tenant_config")
+}
+
+// ============================================================
+// Identity & RBAC
+// ============================================================
+
+enum UserStatus {
+  ACTIVE
+  INVITED
+  DISABLED
+}
+
+model User {
+  id           String     @id @default(cuid())
+  tenantId     String
+  email        String
+  passwordHash String?    // null when using external IdP (Keycloak/social) later
+  name         String?
+  status       UserStatus @default(ACTIVE)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  tenant       Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  roles        UserRole[]
+
+  // Email is unique per tenant, not globally (same person may exist in many tenants).
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@map("users")
+}
+
+// Roles are per-tenant so each org can define its own. System roles are seeded.
+model Role {
+  id          String           @id @default(cuid())
+  tenantId    String
+  key         String           // e.g. admin, editor, donor, student, teacher
+  name        String
+  isSystem    Boolean          @default(false)
+  createdAt   DateTime         @default(now())
+
+  tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  users       UserRole[]
+  permissions RolePermission[]
+
+  @@unique([tenantId, key])
+  @@index([tenantId])
+  @@map("roles")
+}
+
+// Permissions are global definitions (e.g. "content:write", "donation:read").
+model Permission {
+  id          String           @id @default(cuid())
+  key         String           @unique // resource:action
+  description String?
+
+  roles       RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model UserRole {
+  userId String
+  roleId String
+
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+}
+
+// ============================================================
+// CMS (dynamic content types)
+// ============================================================
+
+enum ContentStatus {
+  DRAFT
+  PUBLISHED
+  SCHEDULED
+  ARCHIVED
+}
+
+// Generic content model supporting pages, articles, programs, projects, etc.
+// `type` is a free string so tenants define custom content types with no code change.
+// `body` holds structured block/JSON content from the page builder.
+model Content {
+  id          String        @id @default(cuid())
+  tenantId    String
+  type        String        // page | article | program | project | story | <custom>
+  slug        String
+  title       String
+  excerpt     String?
+  body        Json          @default("{}") // block-based content
+  status      ContentStatus @default(DRAFT)
+  locale      String        @default("en")
+  publishedAt DateTime?
+  authorId    String?
+  seo         Json          @default("{}") // meta title/description, og, schema.org
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  tenant      Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  revisions   ContentRevision[]
+
+  @@unique([tenantId, type, slug, locale])
+  @@index([tenantId, type, status])
+  @@map("content")
+}
+
+// ============================================================
+// Donations
+// ============================================================
+
+enum DonationType {
+  ONE_TIME
+  RECURRING
+}
+
+enum DonationStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+}
+
+model Donor {
+  id        String     @id @default(cuid())
+  tenantId  String
+  email     String
+  name      String?
+  phone     String?
+  userId    String?    // optional link to a registered user
+  createdAt DateTime   @default(now())
+
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  donations Donation[]
+  subscriptions Subscription[]
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@map("donors")
+}
+
+model Donation {
+  id            String         @id @default(cuid())
+  tenantId      String
+  donorId       String?
+  amount        Int            // minor units (e.g. paise/cents) to avoid float errors
+  currency      String         @default("INR")
+  type          DonationType   @default(ONE_TIME)
+  status        DonationStatus @default(PENDING)
+  campaign      String?        // free-form campaign key (campaigns module added later)
+  provider      String         // adapter used: mock | razorpay | stripe
+  providerRef   String?        // provider intent/order id
+  receiptNumber String?        // assigned on success
+  subscriptionId String?       // set when this donation is a recurring cycle charge
+  // Tax snapshot (region auto-detected at creation; rate/amount frozen on the record).
+  taxCountry    String?
+  taxRegion     String?        // state/province
+  taxRatePct    Float          @default(0)
+  taxAmount     Int            @default(0) // minor units, same currency as `currency`
+  taxBreakdown  Json           @default("[]") // [{name, ratePct, amount}]
+  // FX snapshot: value of this donation in the tenant base currency at time of creation.
+  baseCurrency  String?
+  fxRate        Float?         // 1 unit `currency` = fxRate units baseCurrency
+  baseAmount    Int?           // minor units in baseCurrency
+  metadata      Json           @default("{}")
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  donor         Donor?         @relation(fields: [donorId], references: [id], onDelete: SetNull)
+  subscription  Subscription?  @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  receipt       Receipt?
+
+  @@index([tenantId, status])
+  @@index([tenantId, createdAt])
+  @@index([subscriptionId])
+  @@map("donations")
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAUSED
+  CANCELLED
+}
+
+enum SubscriptionInterval {
+  WEEKLY
+  MONTHLY
+  QUARTERLY
+  YEARLY
+}
+
+// A recurring donation mandate. Each successful cycle creates a Donation row linked back.
+model Subscription {
+  id           String               @id @default(cuid())
+  tenantId     String
+  donorId      String?
+  amount       Int                  // minor units per cycle
+  currency     String               @default("INR")
+  interval     SubscriptionInterval @default(MONTHLY)
+  status       SubscriptionStatus   @default(ACTIVE)
+  campaign     String?
+  provider     String
+  providerRef  String?              // provider subscription id
+  nextChargeAt DateTime?
+  metadata     Json                 @default("{}")
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+
+  tenant       Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  donor        Donor?               @relation(fields: [donorId], references: [id], onDelete: SetNull)
+  donations    Donation[]
+
+  @@index([tenantId, status])
+  @@map("subscriptions")
+}
+
+// Issued receipt for a successful donation. Carries a snapshot of 80G/tax data so the
+// certificate stays valid even if tenant config changes later.
+model Receipt {
+  id            String   @id @default(cuid())
+  tenantId      String
+  donationId    String   @unique
+  number        String   // human-facing receipt number (per-tenant sequence)
+  amount        Int
+  currency      String   @default("INR")
+  issuedAt      DateTime @default(now())
+  donorName     String?
+  donorEmail    String?
+  // Snapshot of issuing org's legal/80G data at time of issue:
+  orgLegalName  String?
+  orgAddress    String?
+  orgPan        String?
+  reg80GNumber  String?
+  reg80GDate    String?
+  is80GEligible Boolean  @default(false)
+  metadata      Json     @default("{}")
+
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  donation      Donation @relation(fields: [donationId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, number])
+  @@index([tenantId])
+  @@map("receipts")
+}
+
+// Immutable snapshot of a Content item at each save/publish, for version history.
+model ContentRevision {
+  id          String   @id @default(cuid())
+  tenantId    String
+  contentId   String
+  version     Int
+  title       String
+  excerpt     String?
+  body        Json     @default("{}")
+  seo         Json     @default("{}")
+  status      String
+  authorId    String?
+  createdAt   DateTime @default(now())
+
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  content     Content  @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@unique([contentId, version])
+  @@index([tenantId, contentId])
+  @@map("content_revisions")
+}
+
+// ============================================================
+// Currency / FX
+// ============================================================
+
+// Per-tenant exchange rates. `rate` converts 1 unit of `base` into `quote`.
+// Seeded/manual by default; a live adapter can upsert these from a free FX API.
+model FxRate {
+  id        String   @id @default(cuid())
+  tenantId  String
+  base      String   // ISO 4217, e.g. USD
+  quote     String   // ISO 4217, e.g. INR
+  rate      Float
+  source    String   @default("manual") // manual | frankfurter | ...
+  fetchedAt DateTime @default(now())
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, base, quote])
+  @@index([tenantId])
+  @@map("fx_rates")
+}
+
+// ============================================================
+// Tax engine (jurisdiction rules)
+// ============================================================
+
+// A tax rule for a jurisdiction. Most specific match wins:
+// country+region+category > country+region > country+category > country.
+// `region` null = applies to the whole country; `category` null = all categories.
+model TaxRule {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String   // e.g. "GST", "VAT", "CA Sales Tax"
+  country   String   // ISO 3166-1 alpha-2, e.g. IN
+  region    String?  // state/province code, e.g. MH
+  category  String?  // product/category key; null = all
+  ratePct   Float    // e.g. 18 for 18%
+  priority  Int      @default(0)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, country, region])
+  @@map("tax_rules")
+}
+
+// ============================================================
+// Certificate engine (templates + issued certificates)
+// ============================================================
+
+// A per-tenant certificate template. `type` distinguishes 80G, course, volunteer, etc.
+// `template` holds the print-ready HTML with {{placeholders}} resolved at issue time.
+model CertificateTemplate {
+  id        String   @id @default(cuid())
+  tenantId  String
+  type      String   // tax80g | course | volunteer | <custom>
+  name      String
+  template  String   // HTML with {{placeholders}}
+  fields    Json     @default("[]") // declared placeholder field names
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  certificates Certificate[]
+
+  @@unique([tenantId, type, name])
+  @@index([tenantId, type])
+  @@map("certificate_templates")
+}
+
+// An issued certificate instance. `code` is a public verification code; `data` is the
+// snapshot of values rendered into the template (so it never changes retroactively).
+model Certificate {
+  id          String   @id @default(cuid())
+  tenantId    String
+  templateId  String
+  type        String
+  code        String   // public verification code (globally unique)
+  subjectName String?
+  subjectEmail String?
+  data        Json     @default("{}") // snapshot of placeholder values
+  renderedHtml String   // frozen rendered HTML
+  refType     String?  // e.g. donation | receipt | enrollment
+  refId       String?  // id of the referenced record
+  issuedAt    DateTime @default(now())
+  revokedAt   DateTime?
+
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  template    CertificateTemplate @relation(fields: [templateId], references: [id], onDelete: Restrict)
+
+  @@unique([code])
+  @@index([tenantId, type])
+  @@index([tenantId, refType, refId])
+  @@map("certificates")
+}
+
+
+// ============================================================
+// LMS (courses, modules, lessons, enrollment, progress)
+// ============================================================
+
+enum CourseStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum LessonType {
+  VIDEO
+  TEXT
+  PDF
+  QUIZ
+}
+
+enum EnrollmentStatus {
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+// A course is the top-level learning container. `price` is in minor units; 0 = free.
+model Course {
+  id           String       @id @default(cuid())
+  tenantId     String
+  slug         String
+  title        String
+  summary      String?
+  description  String?      @db.Text
+  coverUrl     String?
+  status       CourseStatus @default(DRAFT)
+  price        Int          @default(0) // minor units; 0 = free
+  currency     String       @default("INR")
+  instructorId String?      // User id of the teacher (optional)
+  publishedAt  DateTime?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  tenant       Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  modules      CourseModule[]
+  enrollments  Enrollment[]
+
+  @@unique([tenantId, slug])
+  @@index([tenantId, status])
+  @@map("courses")
+}
+
+// A section within a course, ordered.
+model CourseModule {
+  id        String   @id @default(cuid())
+  tenantId  String
+  courseId  String
+  title     String
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  course    Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  lessons   Lesson[]
+
+  @@index([tenantId])
+  @@index([courseId])
+  @@map("course_modules")
+}
+
+// An individual lesson. `content` is block/JSON for TEXT; video/pdf use url fields.
+model Lesson {
+  id          String     @id @default(cuid())
+  tenantId    String
+  moduleId    String
+  title       String
+  type        LessonType @default(TEXT)
+  order       Int        @default(0)
+  content     Json       @default("{}")
+  videoUrl    String?
+  durationSec Int        @default(0)
+  isPreview   Boolean    @default(false) // viewable without enrollment
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  tenant      Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  module      CourseModule   @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  progress    LessonProgress[]
+
+  @@index([tenantId])
+  @@index([moduleId])
+  @@map("lessons")
+}
+
+// A user's enrollment in a course, with derived progress percentage.
+model Enrollment {
+  id          String           @id @default(cuid())
+  tenantId    String
+  courseId    String
+  userId      String
+  status      EnrollmentStatus @default(ACTIVE)
+  progressPct Int              @default(0)
+  enrolledAt  DateTime         @default(now())
+  completedAt DateTime?
+
+  tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  course      Course           @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  progress    LessonProgress[]
+
+  @@unique([tenantId, courseId, userId])
+  @@index([tenantId, userId])
+  @@map("enrollments")
+}
+
+// Per-lesson completion tracking for an enrollment.
+model LessonProgress {
+  id           String    @id @default(cuid())
+  tenantId     String
+  enrollmentId String
+  lessonId     String
+  completed    Boolean   @default(false)
+  completedAt  DateTime?
+  createdAt    DateTime  @default(now())
+
+  tenant       Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  enrollment   Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  lesson       Lesson     @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+
+  @@unique([enrollmentId, lessonId])
+  @@index([tenantId])
+  @@map("lesson_progress")
+}
+
+
+// ============================================================
+// Commerce (products + orders)
+// ============================================================
+
+enum ProductType {
+  PHYSICAL
+  DIGITAL
+}
+
+enum ProductStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  FULFILLED
+  CANCELLED
+  REFUNDED
+}
+
+// A sellable product. `price` is in minor units. Physical products track `stock`
+// (null = untracked); digital products ignore stock.
+model Product {
+  id          String        @id @default(cuid())
+  tenantId    String
+  slug        String
+  title       String
+  description String?       @db.Text
+  type        ProductType   @default(PHYSICAL)
+  status      ProductStatus @default(DRAFT)
+  price       Int           @default(0) // minor units
+  currency    String        @default("INR")
+  category    String?       // free-form category key
+  imageUrl    String?
+  stock       Int?          // null = not tracked / unlimited (digital)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  tenant      Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  orderItems  OrderItem[]
+
+  @@unique([tenantId, slug])
+  @@index([tenantId, status])
+  @@map("products")
+}
+
+// A customer order. Totals are snapshotted in minor units; `provider` records the payment
+// adapter used (mock by default, consistent with donations).
+model Order {
+  id            String      @id @default(cuid())
+  tenantId      String
+  userId        String?     // optional link to a registered user
+  customerEmail String
+  customerName  String?
+  status        OrderStatus @default(PENDING)
+  subtotal      Int         @default(0)
+  total         Int         @default(0)
+  currency      String      @default("INR")
+  provider      String      @default("mock")
+  providerRef   String?
+  metadata      Json        @default("{}")
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  tenant        Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  items         OrderItem[]
+
+  @@index([tenantId, status])
+  @@index([tenantId, createdAt])
+  @@map("orders")
+}
+
+// A line item within an order. Title/price snapshotted so history is stable.
+model OrderItem {
+  id            String   @id @default(cuid())
+  tenantId      String
+  orderId       String
+  productId     String?
+  titleSnapshot String
+  unitPrice     Int
+  quantity      Int      @default(1)
+  lineTotal     Int
+
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  order         Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product       Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([orderId])
+  @@map("order_items")
+}
+
+
+// ============================================================
+// Events
+// ============================================================
+
+enum EventStatus {
+  DRAFT
+  PUBLISHED
+  CANCELLED
+}
+
+enum EventMode {
+  ONLINE
+  PHYSICAL
+  HYBRID
+}
+
+enum RegistrationStatus {
+  REGISTERED
+  ATTENDED
+  CANCELLED
+}
+
+model Event {
+  id          String      @id @default(cuid())
+  tenantId    String
+  slug        String
+  title       String
+  description String?     @db.Text
+  mode        EventMode   @default(PHYSICAL)
+  location    String?     // venue or stream URL
+  startsAt    DateTime
+  endsAt      DateTime?
+  capacity    Int?        // null = unlimited
+  price       Int         @default(0)
+  currency    String      @default("INR")
+  status      EventStatus @default(DRAFT)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  tenant        Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  registrations EventRegistration[]
+
+  @@unique([tenantId, slug])
+  @@index([tenantId, status])
+  @@map("events")
+}
+
+model EventRegistration {
+  id         String             @id @default(cuid())
+  tenantId   String
+  eventId    String
+  userId     String?
+  email      String
+  name       String?
+  ticketCode String             @unique
+  status     RegistrationStatus @default(REGISTERED)
+  createdAt  DateTime           @default(now())
+
+  tenant     Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  event      Event  @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([eventId, email])
+  @@index([tenantId])
+  @@map("event_registrations")
+}
+
+// ============================================================
+// Volunteers
+// ============================================================
+
+enum VolunteerSignupStatus {
+  APPLIED
+  APPROVED
+  REJECTED
+  COMPLETED
+}
+
+model VolunteerOpportunity {
+  id          String   @id @default(cuid())
+  tenantId    String
+  title       String
+  description String?  @db.Text
+  location    String?
+  startsAt    DateTime?
+  slots       Int?     // null = unlimited
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant      Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  signups     VolunteerSignup[]
+
+  @@index([tenantId, active])
+  @@map("volunteer_opportunities")
+}
+
+model VolunteerSignup {
+  id            String                @id @default(cuid())
+  tenantId      String
+  opportunityId String
+  userId        String?
+  email         String
+  name          String?
+  status        VolunteerSignupStatus @default(APPLIED)
+  hours         Int                   @default(0)
+  createdAt     DateTime              @default(now())
+
+  tenant        Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  opportunity   VolunteerOpportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+
+  @@unique([opportunityId, email])
+  @@index([tenantId])
+  @@map("volunteer_signups")
+}
+
+// ============================================================
+// Membership
+// ============================================================
+
+enum MembershipInterval {
+  MONTHLY
+  YEARLY
+  LIFETIME
+}
+
+enum MembershipStatus {
+  ACTIVE
+  EXPIRED
+  CANCELLED
+}
+
+model MembershipPlan {
+  id        String             @id @default(cuid())
+  tenantId  String
+  slug      String
+  name      String
+  price     Int                @default(0)
+  currency  String             @default("INR")
+  interval  MembershipInterval @default(MONTHLY)
+  benefits  Json               @default("[]") // string[]
+  active    Boolean            @default(true)
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  memberships Membership[]
+
+  @@unique([tenantId, slug])
+  @@index([tenantId, active])
+  @@map("membership_plans")
+}
+
+model Membership {
+  id        String           @id @default(cuid())
+  tenantId  String
+  planId    String
+  userId    String
+  status    MembershipStatus @default(ACTIVE)
+  startedAt DateTime         @default(now())
+  expiresAt DateTime?
+
+  tenant    Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  plan      MembershipPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, userId])
+  @@map("memberships")
+}
+
+// ============================================================
+// Community
+// ============================================================
+
+model CommunityPost {
+  id         String   @id @default(cuid())
+  tenantId   String
+  authorId   String?
+  authorName String?
+  title      String
+  body       String   @db.Text
+  pinned     Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  tenant     Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  comments   CommunityComment[]
+
+  @@index([tenantId, createdAt])
+  @@map("community_posts")
+}
+
+model CommunityComment {
+  id         String   @id @default(cuid())
+  tenantId   String
+  postId     String
+  authorId   String?
+  authorName String?
+  body       String   @db.Text
+  createdAt  DateTime @default(now())
+
+  tenant     Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  post       CommunityPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, postId])
+  @@map("community_comments")
+}

@@ -1,0 +1,24 @@
+{
+  "name": "dxp-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Multi-tenant, white-label, AI-powered Digital Experience Platform (NGO + LMS + Commerce + Community + Library).",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "api:dev": "npm run start:dev --workspace=@dxp/api",
+    "api:build": "npm run build --workspace=@dxp/api",
+    "api:start": "npm run start:prod --workspace=@dxp/api",
+    "prisma:generate": "npm run prisma:generate --workspace=@dxp/api",
+    "prisma:migrate": "npm run prisma:migrate --workspace=@dxp/api",
+    "prisma:seed": "npm run prisma:seed --workspace=@dxp/api",
+    "infra:up": "docker compose -f infra/docker-compose.yml up -d",
+    "infra:down": "docker compose -f infra/docker-compose.yml down"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
