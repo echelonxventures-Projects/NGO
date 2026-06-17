@@ -35,16 +35,16 @@ export class TenantIsolationGuard implements CanActivate {
     ]);
 
     // Routes with no tenant context (e.g. health) are allowed only if explicitly public.
-    if (!store?.tenantId || !req.tenantId) {
+    if (!store?.tenantId || !req?.tenantId) {
       if (isPublic) return true;
       throw new ForbiddenException('Tenant context missing');
     }
 
-    if (req.user?.tenantId && req.user.tenantId !== req.tenantId) {
+    if (req?.user?.tenantId && req.user.tenantId !== req.tenantId) {
       throw new ForbiddenException('Authenticated user does not belong to this tenant');
     }
 
-    const claimed = (req.params?.tenantId ?? req.body?.tenantId) as string | undefined;
+    const claimed = (req?.params?.tenantId ?? req?.body?.tenantId) as string | undefined;
     if (claimed && claimed !== req.tenantId) {
       throw new ForbiddenException('Cross-tenant access denied');
     }

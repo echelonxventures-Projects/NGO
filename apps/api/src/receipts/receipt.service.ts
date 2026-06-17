@@ -1,8 +1,9 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContext } from '../tenancy/tenant-context';
 import { toMajor } from '../currency/minor-units';
 import { renderTemplate } from '../certificates/template-render';
+import { EMAIL_PORT, EmailPort } from '../providers/email/email.port';
 
 const RECEIPT_HTML = `<!doctype html><html><head><meta charset="utf-8"><title>Receipt {{number}}</title>
 <style>body{font-family:Arial,Helvetica,sans-serif;color:#222;padding:40px;}
@@ -23,9 +24,12 @@ table{width:100%;border-collapse:collapse;margin:18px 0;}td,th{border:1px solid 
 
 @Injectable()
 export class ReceiptService {
+  private readonly logger = new Logger(ReceiptService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly tenantContext: TenantContext,
+    @Inject(EMAIL_PORT) private readonly email: EmailPort,
   ) {}
 
   list() {
@@ -72,7 +76,30 @@ export class ReceiptService {
         reg80GDate: legal.reg80GDate ?? null,
         is80GEligible: Boolean(legal.reg80GNumber),
       },
+    }).then(async (receipt) => {
+      // Best-effort: email the receipt to the donor. Never blocks/breaks issuance.
+      await this.emailReceipt(receipt.number, receipt.donorEmail);
+      return receipt;
     });
+  }
+
+  /**
+   * Sends the rendered receipt HTML to the donor via the configured EMAIL_PORT. Best-effort:
+   * any failure (no donor email, provider down) is logged and swallowed so the donation/
+   * receipt flow is never affected.
+   */
+  private async emailReceipt(number: string, donorEmail: string | null): Promise<void> {
+    if (!donorEmail) return;
+    try {
+      const html = await this.getHtml(number);
+      await this.email.send({
+        to: donorEmail,
+        subject: `Your donation receipt ${number}`,
+        html,
+      });
+    } catch (e) {
+      this.logger.warn(`Receipt email skipped for ${number}: ${(e as Error).message}`);
+    }
   }
 
   async getHtml(number: string): Promise<string> {

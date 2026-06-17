@@ -1,0 +1,50 @@
+# ------------------------------------------------------
+# THIS FILE WAS AUTOMATICALLY GENERATED (DO NOT MODIFY)
+# ------------------------------------------------------
+
+type CampaignGql {
+  goalAmount: Int!
+  id: String!
+  progressPct: Float!
+  raisedAmount: Int!
+  slug: String!
+  title: String!
+}
+
+type CourseGql {
+  currency: String!
+  id: String!
+  price: Int!
+  slug: String!
+  summary: String
+  title: String!
+}
+
+"""
+A date-time string at UTC, such as 2019-12-03T09:54:33Z, compliant with the date-time format.
+"""
+scalar DateTime
+
+type EventGql {
+  id: String!
+  location: String
+  slug: String!
+  startsAt: DateTime!
+  title: String!
+}
+
+type ProductGql {
+  currency: String!
+  description: String
+  id: String!
+  price: Int!
+  slug: String!
+  title: String!
+}
+
+type Query {
+  campaigns: [CampaignGql!]!
+  courses: [CourseGql!]!
+  events: [EventGql!]!
+  products: [ProductGql!]!
+}

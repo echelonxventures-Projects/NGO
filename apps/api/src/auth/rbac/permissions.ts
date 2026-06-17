@@ -27,6 +27,14 @@ export const PERMISSIONS = {
   MEMBERSHIP_WRITE: 'membership:write',
   COMMUNITY_READ: 'community:read',
   COMMUNITY_MODERATE: 'community:moderate',
+  AI_USE: 'ai:use',
+  VENDOR_READ: 'vendor:read',
+  VENDOR_WRITE: 'vendor:write',
+  VENDOR_ADMIN: 'vendor:admin',
+  AD_READ: 'ad:read',
+  AD_WRITE: 'ad:write',
+  CRM_READ: 'crm:read',
+  CRM_WRITE: 'crm:write',
   TENANT_ADMIN: 'tenant:admin',
 } as const;
 
@@ -53,11 +61,12 @@ export const SYSTEM_ROLES: Record<string, { name: string; permissions: Permissio
       PERMISSIONS.COURSE_WRITE,
       PERMISSIONS.COURSE_PUBLISH,
       PERMISSIONS.CONTENT_READ,
+      PERMISSIONS.AI_USE,
     ],
   },
   student: {
     name: 'Student',
-    permissions: [PERMISSIONS.COURSE_READ, PERMISSIONS.CONTENT_READ],
+    permissions: [PERMISSIONS.COURSE_READ, PERMISSIONS.CONTENT_READ, PERMISSIONS.AI_USE],
   },
   merchant: {
     name: 'Merchant',
@@ -71,5 +80,15 @@ export const SYSTEM_ROLES: Record<string, { name: string; permissions: Permissio
   donor: {
     name: 'Donor',
     permissions: [PERMISSIONS.CONTENT_READ, PERMISSIONS.DONATION_READ],
+  },
+  vendor: {
+    name: 'Vendor',
+    permissions: [
+      PERMISSIONS.PRODUCT_READ,
+      PERMISSIONS.PRODUCT_WRITE,
+      PERMISSIONS.ORDER_READ,
+      PERMISSIONS.VENDOR_READ,
+      PERMISSIONS.VENDOR_WRITE,
+    ],
   },
 };

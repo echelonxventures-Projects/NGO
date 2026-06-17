@@ -57,3 +57,29 @@ export const DEFAULT_80G_TEMPLATE = `<!doctype html>
     Verify authenticity at: {{verifyUrl}}
   </div>
 </div></body></html>`;
+
+/** A print-ready default course-completion certificate template (tenants can override). */
+export const DEFAULT_COURSE_TEMPLATE = `<!doctype html>
+<html><head><meta charset="utf-8"><title>Certificate of Completion</title>
+<style>
+  body{font-family:Georgia,'Times New Roman',serif;color:#1a1a1a;margin:0;padding:40px;}
+  .cert{max-width:840px;margin:0 auto;border:3px double #0D47A1;padding:48px 56px;text-align:center;}
+  h1{color:#0D47A1;margin:0 0 6px;font-size:30px;letter-spacing:1px;}
+  .sub{color:#555;margin-bottom:28px;}
+  .name{font-size:26px;font-weight:bold;margin:18px 0;border-bottom:2px solid #0D47A1;display:inline-block;padding:0 24px 6px;}
+  .course{font-size:20px;color:#0D47A1;margin:14px 0;}
+  .meta{display:flex;justify-content:space-between;margin-top:40px;font-size:14px;color:#444;}
+  .code{font-family:monospace;}
+</style></head>
+<body><div class="cert">
+  <h1>Certificate of Completion</h1>
+  <div class="sub">{{orgName}}</div>
+  <p>This is to certify that</p>
+  <div class="name">{{learnerName}}</div>
+  <p>has successfully completed the course</p>
+  <div class="course">{{courseTitle}}</div>
+  <div class="meta">
+    <div>Date: <b>{{issueDate}}</b></div>
+    <div>Verify: <span class="code">{{verificationCode}}</span></div>
+  </div>
+</div></body></html>`;

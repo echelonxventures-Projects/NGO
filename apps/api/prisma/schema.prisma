@@ -69,6 +69,17 @@ model Tenant {
   wishlistItems        WishlistItem[]
   refunds              Refund[]
 
+  // LMS depth (Wave 1b)
+  quizzes               Quiz[]
+  questions             Question[]
+  quizAttempts          QuizAttempt[]
+  assignments           Assignment[]
+  assignmentSubmissions AssignmentSubmission[]
+  learningPaths         LearningPath[]
+
+  // Notifications (Wave 1c)
+  notifications         Notification[]
+
   @@map("tenants")
 }
 
@@ -157,12 +168,17 @@ model User {
   email        String
   passwordHash String?    // null when using external IdP (Keycloak/social) later
   name         String?
+  phone        String?
+  mfaSecret    String?    // TOTP secret (base32); null = not enrolled
+  mfaEnabled   Boolean    @default(false)
   status       UserStatus @default(ACTIVE)
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 
   tenant       Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   roles        UserRole[]
+  notifications Notification[]
+  oauthAccounts OAuthAccount[]
 
   // Email is unique per tenant, not globally (same person may exist in many tenants).
   @@unique([tenantId, email])
@@ -563,6 +579,8 @@ model Course {
   tenant       Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   modules      CourseModule[]
   enrollments  Enrollment[]
+  quizzes      Quiz[]
+  assignments  Assignment[]
 
   @@unique([tenantId, slug])
   @@index([tenantId, status])
@@ -650,6 +668,152 @@ model LessonProgress {
   @@map("lesson_progress")
 }
 
+// ---- LMS depth (Wave 1b): quizzes, assignments, exams, learning paths ----
+
+enum QuestionType {
+  SINGLE
+  MULTIPLE
+  TRUE_FALSE
+}
+
+enum AttemptStatus {
+  IN_PROGRESS
+  SUBMITTED
+}
+
+enum SubmissionStatus {
+  SUBMITTED
+  GRADED
+  RETURNED
+}
+
+// A quiz/exam attached to a course. `isExam` distinguishes graded exams from practice
+// quizzes; `passingScore` is a percentage (0..100).
+model Quiz {
+  id           String   @id @default(cuid())
+  tenantId     String
+  courseId     String
+  title        String
+  description  String?  @db.Text
+  passingScore Int      @default(60)
+  timeLimitSec Int?
+  isExam       Boolean  @default(false)
+  shuffle      Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  course       Course        @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  questions    Question[]
+  attempts     QuizAttempt[]
+
+  @@index([tenantId])
+  @@index([courseId])
+  @@map("quizzes")
+}
+
+// A question within a quiz. `options` is a JSON array of { id, text }; `correct` is a JSON
+// array of correct option ids. Correct answers are never sent to learners.
+model Question {
+  id        String       @id @default(cuid())
+  tenantId  String
+  quizId    String
+  prompt    String       @db.Text
+  type      QuestionType @default(SINGLE)
+  options   Json         @default("[]")
+  correct   Json         @default("[]")
+  points    Int          @default(1)
+  order     Int          @default(0)
+
+  tenant    Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  quiz      Quiz         @relation(fields: [quizId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([quizId])
+  @@map("questions")
+}
+
+// A learner's attempt at a quiz. `answers` is a JSON map of questionId -> option id(s).
+model QuizAttempt {
+  id          String        @id @default(cuid())
+  tenantId    String
+  quizId      String
+  userId      String
+  answers     Json          @default("{}")
+  score       Int           @default(0) // percentage 0..100
+  passed      Boolean       @default(false)
+  status      AttemptStatus @default(SUBMITTED)
+  startedAt   DateTime      @default(now())
+  submittedAt DateTime?
+
+  tenant      Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  quiz        Quiz          @relation(fields: [quizId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([quizId, userId])
+  @@map("quiz_attempts")
+}
+
+// A course assignment that learners submit (file URL or text). Graded by a teacher.
+model Assignment {
+  id           String   @id @default(cuid())
+  tenantId     String
+  courseId     String
+  title        String
+  instructions String?  @db.Text
+  dueAt        DateTime?
+  maxPoints    Int      @default(100)
+  createdAt    DateTime @default(now())
+
+  tenant       Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  course       Course                 @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  submissions  AssignmentSubmission[]
+
+  @@index([tenantId])
+  @@index([courseId])
+  @@map("assignments")
+}
+
+// A learner's submission for an assignment, with teacher grade/feedback.
+model AssignmentSubmission {
+  id           String           @id @default(cuid())
+  tenantId     String
+  assignmentId String
+  userId       String
+  fileUrl      String?
+  text         String?          @db.Text
+  status       SubmissionStatus @default(SUBMITTED)
+  grade        Int?
+  feedback     String?          @db.Text
+  submittedAt  DateTime         @default(now())
+  gradedAt     DateTime?
+
+  tenant       Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  assignment   Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+
+  @@unique([assignmentId, userId])
+  @@index([tenantId])
+  @@map("assignment_submissions")
+}
+
+// An ordered sequence of courses (a curriculum). `courseIds` is an ordered JSON array.
+model LearningPath {
+  id          String   @id @default(cuid())
+  tenantId    String
+  slug        String
+  title       String
+  description String?  @db.Text
+  courseIds   Json     @default("[]")
+  published   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, slug])
+  @@index([tenantId])
+  @@map("learning_paths")
+}
+
 
 // ============================================================
 // Commerce (products + orders)
@@ -688,6 +852,7 @@ model Product {
   currency    String        @default("INR")
   category    String?       // free-form category key
   imageUrl    String?
+  vendorId    String?       // marketplace: owning vendor (null = first-party / platform)
   stock       Int?          // null = not tracked / unlimited (digital)
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
@@ -927,6 +1092,7 @@ model EventRegistration {
   name       String?
   ticketCode String             @unique
   status     RegistrationStatus @default(REGISTERED)
+  checkedInAt DateTime?
   createdAt  DateTime           @default(now())
 
   tenant     Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -1075,4 +1241,939 @@ model CommunityComment {
 
   @@index([tenantId, postId])
   @@map("community_comments")
+}
+
+
+// ============================================================
+// Notifications (multi-channel platform)
+// ============================================================
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+  SMS
+  WHATSAPP
+  PUSH
+  TELEGRAM
+  WEBHOOK
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+  READ
+}
+
+// A notification delivered (or attempted) on a single channel. In-app notifications are
+// queried back by the recipient; other channels are persisted as an audit/outbox record.
+model Notification {
+  id        String              @id @default(cuid())
+  tenantId  String
+  userId    String?             // recipient user (required for IN_APP; null for external-only)
+  channel   NotificationChannel
+  status    NotificationStatus  @default(PENDING)
+  type      String              // event/template key, e.g. "user.welcome", "donation.receipt"
+  title     String
+  body      String              @db.Text
+  data      Json                @default("{}") // structured payload (links, ids, cta)
+  to        String?             // external address snapshot (email/phone/webhook url)
+  error     String?             // failure reason when status = FAILED
+  readAt    DateTime?
+  sentAt    DateTime?
+  createdAt DateTime            @default(now())
+
+  tenant    Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user      User?               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([tenantId, userId, status])
+  @@index([userId, readAt])
+  @@map("notifications")
+}
+
+// ============================================================
+// AI platform (conversation persistence)
+//
+// Tenant-owned via the `tenantId` column (isolation enforced by the Prisma scoped() client
+// extension + isolation guard). Newer feature modules use the column-only pattern rather than
+// a declared Tenant back-relation to stay self-contained; cross-model relations within a
+// module still use proper foreign keys (see AiMessage -> AiConversation).
+// ============================================================
+
+model AiConversation {
+  id        String      @id @default(cuid())
+  tenantId  String
+  userId    String?
+  feature   String      @default("chat") // chat | tutor | content | quiz | summary | ...
+  title     String?
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  messages  AiMessage[]
+
+  @@index([tenantId])
+  @@index([tenantId, userId])
+  @@map("ai_conversations")
+}
+
+model AiMessage {
+  id             String         @id @default(cuid())
+  tenantId       String
+  conversationId String
+  role           String         // system | user | assistant
+  content        String         @db.Text
+  provider       String?
+  model          String?
+  createdAt      DateTime       @default(now())
+
+  conversation   AiConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([conversationId])
+  @@map("ai_messages")
+}
+
+// ============================================================
+// Digital Library (federation bookmarks)
+// ============================================================
+
+model LibraryBookmark {
+  id           String   @id @default(cuid())
+  tenantId     String
+  userId       String
+  source       String   // connector name: openlibrary | gutenberg | internet-archive
+  externalId   String
+  title        String
+  authors      Json     @default("[]")
+  url          String
+  thumbnailUrl String?
+  format       String?
+  license      String?
+  createdAt    DateTime @default(now())
+
+  @@unique([tenantId, userId, source, externalId])
+  @@index([tenantId])
+  @@index([tenantId, userId])
+  @@map("library_bookmarks")
+}
+
+// ============================================================
+// Commerce completion: categories, shipping, invoices, returns
+// ============================================================
+
+enum ShipmentStatus {
+  PENDING
+  SHIPPED
+  DELIVERED
+  RETURNED
+}
+
+enum ReturnStatus {
+  REQUESTED
+  APPROVED
+  REJECTED
+  RECEIVED
+  REFUNDED
+}
+
+model ProductCategory {
+  id        String            @id @default(cuid())
+  tenantId  String
+  slug      String
+  name      String
+  parentId  String?
+  order     Int               @default(0)
+  createdAt DateTime          @default(now())
+
+  parent    ProductCategory?  @relation("CategoryTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children  ProductCategory[] @relation("CategoryTree")
+
+  @@unique([tenantId, slug])
+  @@index([tenantId])
+  @@map("product_categories")
+}
+
+model ShippingMethod {
+  id          String   @id @default(cuid())
+  tenantId    String
+  name        String
+  description String?
+  price       Int      @default(0) // flat rate, minor units
+  currency    String   @default("INR")
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("shipping_methods")
+}
+
+model Shipment {
+  id             String         @id @default(cuid())
+  tenantId       String
+  orderId        String
+  methodId       String?
+  methodName     String
+  cost           Int            @default(0)
+  status         ShipmentStatus @default(PENDING)
+  carrier        String?
+  trackingNumber String?
+  address        Json           @default("{}")
+  shippedAt      DateTime?
+  deliveredAt    DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@index([tenantId])
+  @@index([orderId])
+  @@map("shipments")
+}
+
+model Invoice {
+  id        String   @id @default(cuid())
+  tenantId  String
+  orderId   String
+  number    String
+  subtotal  Int      @default(0)
+  discount  Int      @default(0)
+  shipping  Int      @default(0)
+  tax       Int      @default(0)
+  total     Int      @default(0)
+  currency  String   @default("INR")
+  issuedAt  DateTime @default(now())
+  data      Json     @default("{}")
+
+  @@unique([tenantId, number])
+  @@index([tenantId])
+  @@index([orderId])
+  @@map("invoices")
+}
+
+model OrderReturn {
+  id        String       @id @default(cuid())
+  tenantId  String
+  orderId   String
+  reason    String?
+  status    ReturnStatus @default(REQUESTED)
+  items     Json         @default("[]") // [{ orderItemId, quantity }]
+  refundId  String?
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  @@index([tenantId])
+  @@index([orderId])
+  @@map("order_returns")
+}
+
+// ============================================================
+// Multi-vendor marketplace
+// ============================================================
+
+enum VendorType {
+  NGO
+  SHG               // self-help group
+  ARTISAN
+  WOMEN_ENTREPRENEUR
+  TRAINER
+  OTHER
+}
+
+enum VendorStatus {
+  PENDING
+  APPROVED
+  SUSPENDED
+}
+
+enum PayoutStatus {
+  PENDING
+  PAID
+}
+
+model Vendor {
+  id            String       @id @default(cuid())
+  tenantId      String
+  userId        String?      // owning user (applicant)
+  slug          String
+  name          String
+  type          VendorType   @default(OTHER)
+  status        VendorStatus @default(PENDING)
+  commissionPct Int          @default(1500) // basis points retained by platform (1500 = 15%)
+  bio           String?      @db.Text
+  logoUrl       String?
+  payoutDetails Json         @default("{}")
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@unique([tenantId, slug])
+  @@index([tenantId])
+  @@index([tenantId, userId])
+  @@map("vendors")
+}
+
+model VendorPayout {
+  id          String       @id @default(cuid())
+  tenantId    String
+  vendorId    String
+  grossSales  Int          @default(0) // minor units of vendor sales in the period
+  commission  Int          @default(0) // platform commission retained
+  netAmount   Int          @default(0) // paid out to vendor
+  currency    String       @default("INR")
+  status      PayoutStatus @default(PENDING)
+  periodStart DateTime?
+  periodEnd   DateTime?
+  createdAt   DateTime     @default(now())
+  paidAt      DateTime?
+
+  @@index([tenantId])
+  @@index([tenantId, vendorId])
+  @@map("vendor_payouts")
+}
+
+// ============================================================
+// LMS completion: exams, notes, discussions, attendance, IDs
+// ============================================================
+
+enum ExamType {
+  MCQ
+  ESSAY
+  SUBJECTIVE
+  VIVA
+  CODING
+  FILE_UPLOAD
+}
+
+enum ExamAttemptStatus {
+  IN_PROGRESS
+  SUBMITTED
+  GRADED
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+  EXCUSED
+}
+
+model Exam {
+  id          String   @id @default(cuid())
+  tenantId    String
+  courseId    String
+  title       String
+  type        ExamType @default(MCQ)
+  durationMin Int      @default(60)
+  totalPoints Int      @default(100)
+  passingPct  Int      @default(40)
+  randomize   Boolean  @default(false)
+  questions   Json     @default("[]") // [{ prompt, options?, correctIndex?, points }]
+  scheduledAt DateTime?
+  published   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  attempts    ExamAttempt[]
+
+  @@index([tenantId])
+  @@index([tenantId, courseId])
+  @@map("exams")
+}
+
+model ExamAttempt {
+  id          String            @id @default(cuid())
+  tenantId    String
+  examId      String
+  userId      String
+  answers     Json              @default("{}")
+  score       Int               @default(0)
+  passed      Boolean           @default(false)
+  status      ExamAttemptStatus @default(IN_PROGRESS)
+  startedAt   DateTime          @default(now())
+  submittedAt DateTime?
+  gradedAt    DateTime?
+
+  exam        Exam              @relation(fields: [examId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([examId, userId])
+  @@map("exam_attempts")
+}
+
+model LessonNote {
+  id        String   @id @default(cuid())
+  tenantId  String
+  lessonId  String
+  userId    String
+  body      String   @db.Text
+  timestamp Int?     // optional video position (seconds)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([tenantId, lessonId, userId])
+  @@map("lesson_notes")
+}
+
+model Discussion {
+  id        String            @id @default(cuid())
+  tenantId  String
+  courseId  String
+  lessonId  String?
+  userId    String
+  title     String
+  body      String            @db.Text
+  pinned    Boolean           @default(false)
+  createdAt DateTime          @default(now())
+
+  replies   DiscussionReply[]
+
+  @@index([tenantId])
+  @@index([tenantId, courseId])
+  @@map("discussions")
+}
+
+model DiscussionReply {
+  id           String     @id @default(cuid())
+  tenantId     String
+  discussionId String
+  userId       String
+  body         String     @db.Text
+  createdAt    DateTime   @default(now())
+
+  discussion   Discussion @relation(fields: [discussionId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([discussionId])
+  @@map("discussion_replies")
+}
+
+model ClassAttendance {
+  id        String           @id @default(cuid())
+  tenantId  String
+  courseId  String
+  userId    String
+  sessionId String?          // optional live-session link
+  date      DateTime         @default(now())
+  status    AttendanceStatus @default(PRESENT)
+  method    String?          // qr | manual | live
+  createdAt DateTime         @default(now())
+
+  @@index([tenantId])
+  @@index([tenantId, courseId, userId])
+  @@map("class_attendance")
+}
+
+model StudentProfile {
+  id           String   @id @default(cuid())
+  tenantId     String
+  userId       String
+  enrollmentNo String
+  qrPayload    String   // scannable identity token (deep-link / id)
+  guardian     String?
+  phone        String?
+  createdAt    DateTime @default(now())
+
+  @@unique([tenantId, userId])
+  @@unique([tenantId, enrollmentNo])
+  @@index([tenantId])
+  @@map("student_profiles")
+}
+
+model TeacherProfile {
+  id        String   @id @default(cuid())
+  tenantId  String
+  userId    String
+  staffId   String
+  qrPayload String
+  bio       String?  @db.Text
+  subjects  Json     @default("[]")
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, userId])
+  @@unique([tenantId, staffId])
+  @@index([tenantId])
+  @@map("teacher_profiles")
+}
+
+// ============================================================
+// Live class platform
+// ============================================================
+
+enum LiveSessionStatus {
+  SCHEDULED
+  LIVE
+  ENDED
+  CANCELLED
+}
+
+enum LiveRecurrence {
+  NONE
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+model LiveSession {
+  id           String            @id @default(cuid())
+  tenantId     String
+  courseId     String?
+  title        String
+  description  String?           @db.Text
+  provider     String            @default("jitsi")
+  roomName     String
+  joinUrl      String
+  hostId       String?
+  hostName     String?
+  scheduledAt  DateTime
+  durationMin  Int               @default(60)
+  recurrence   LiveRecurrence    @default(NONE)
+  status       LiveSessionStatus @default(SCHEDULED)
+  recordingUrl String?
+  startedAt    DateTime?
+  endedAt      DateTime?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  attendance   LiveAttendance[]
+
+  @@index([tenantId])
+  @@index([tenantId, courseId])
+  @@index([tenantId, scheduledAt])
+  @@map("live_sessions")
+}
+
+model LiveAttendance {
+  id        String      @id @default(cuid())
+  tenantId  String
+  sessionId String
+  userId    String
+  joinedAt  DateTime    @default(now())
+  leftAt    DateTime?
+
+  session   LiveSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, userId])
+  @@index([tenantId])
+  @@map("live_attendance")
+}
+
+// ============================================================
+// Engagement completion: volunteer hour logs, membership benefits
+// ============================================================
+
+model VolunteerHourLog {
+  id        String   @id @default(cuid())
+  tenantId  String
+  signupId  String
+  hours     Int      @default(0)
+  date      DateTime @default(now())
+  note      String?
+  verified  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([tenantId, signupId])
+  @@map("volunteer_hour_logs")
+}
+
+model MembershipBenefit {
+  id          String   @id @default(cuid())
+  tenantId    String
+  planId      String
+  key         String   // e.g. "discount", "exclusive_content", "community_access", "certificate"
+  label       String
+  value       String?  // e.g. "10" (percent) for discount
+  createdAt   DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([tenantId, planId])
+  @@map("membership_benefits")
+}
+
+// ============================================================
+// Ad management platform
+// ============================================================
+
+enum AdType {
+  BANNER
+  VIDEO
+  NATIVE
+  SPONSORED
+  AFFILIATE
+  CAMPAIGN
+}
+
+model AdPlacement {
+  id          String   @id @default(cuid())
+  tenantId    String
+  key         String   // slot identifier, e.g. "home_top", "sidebar"
+  name        String
+  description String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  ads         Ad[]
+
+  @@unique([tenantId, key])
+  @@index([tenantId])
+  @@map("ad_placements")
+}
+
+model Ad {
+  id          String       @id @default(cuid())
+  tenantId    String
+  placementId String?
+  name        String
+  type        AdType       @default(BANNER)
+  imageUrl    String?
+  videoUrl    String?
+  html        String?      @db.Text
+  targetUrl   String?
+  weight      Int          @default(1) // relative weight for weighted rotation
+  active      Boolean      @default(true)
+  startAt     DateTime?
+  endAt       DateTime?
+  // Targeting: arrays of allowed values; empty/absent = match all.
+  targeting   Json         @default("{}") // { country?, state?, city?, language?, device?, role?, membership? }
+  impressions Int          @default(0)
+  clicks      Int          @default(0)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  placement   AdPlacement? @relation(fields: [placementId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([tenantId, active])
+  @@map("ads")
+}
+
+model AdImpression {
+  id        String   @id @default(cuid())
+  tenantId  String
+  adId      String
+  context   Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([tenantId, adId])
+  @@map("ad_impressions")
+}
+
+model AdClick {
+  id        String   @id @default(cuid())
+  tenantId  String
+  adId      String
+  context   Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([tenantId, adId])
+  @@map("ad_clicks")
+}
+
+// ============================================================
+// Deep linking / smart links
+// ============================================================
+
+model SmartLink {
+  id          String   @id @default(cuid())
+  tenantId    String
+  slug        String   // short code in the share URL
+  targetUrl   String   // default (web) destination
+  androidUrl  String?  // android deep link / intent
+  iosUrl      String?  // ios universal link / scheme
+  fallbackUrl String?  // store/marketing fallback
+  title       String?
+  campaign    String?  // campaign tag for attribution
+  referrerId  String?  // referring user for referral links
+  qrPayload   String
+  clicks      Int      @default(0)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([tenantId, slug])
+  @@index([tenantId])
+  @@map("smart_links")
+}
+
+model SmartLinkClick {
+  id        String   @id @default(cuid())
+  tenantId  String
+  linkId    String
+  platform  String?  // android | ios | web
+  userAgent String?
+  referrer  String?
+  context   Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([tenantId, linkId])
+  @@map("smart_link_clicks")
+}
+
+// ============================================================
+// Analytics platform
+// ============================================================
+
+model AnalyticsEvent {
+  id        String   @id @default(cuid())
+  tenantId  String
+  type      String   // pageview | donation | sale | enrollment | signup | event_register | ...
+  name      String?  // optional sub-name / label
+  userId    String?
+  sessionId String?
+  path      String?
+  value     Int      @default(0) // optional numeric value (minor units / count)
+  props     Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([tenantId, type, createdAt])
+  @@map("analytics_events")
+}
+
+// ============================================================
+// Auth completion: OAuth accounts + OTP challenges
+// ============================================================
+
+model OAuthAccount {
+  id             String   @id @default(cuid())
+  tenantId       String
+  userId         String
+  provider       String   // google | github | facebook | linkedin | apple
+  providerUserId String
+  email          String?
+  createdAt      DateTime @default(now())
+
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, provider, providerUserId])
+  @@index([tenantId])
+  @@map("oauth_accounts")
+}
+
+model OtpChallenge {
+  id        String   @id @default(cuid())
+  tenantId  String
+  channel   String   // sms | email
+  recipient String   // phone or email
+  codeHash  String
+  purpose   String   @default("login") // login | verify
+  expiresAt DateTime
+  consumed  Boolean  @default(false)
+  attempts  Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([tenantId, recipient])
+  @@map("otp_challenges")
+}
+
+// ============================================================
+// Security: audit logs
+// ============================================================
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  tenantId   String?  // null for pre-tenant / platform routes
+  userId     String?
+  method     String
+  path       String
+  statusCode Int?
+  ip         String?
+  userAgent  String?
+  meta       Json     @default("{}")
+  createdAt  DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([tenantId, createdAt])
+  @@index([userId])
+  @@map("audit_logs")
+}
+
+// ============================================================
+// CRM + fundraising campaigns + sponsorship
+// ============================================================
+
+enum CampaignStatus {
+  DRAFT
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+enum SponsorshipType {
+  CHILD
+  EDUCATION
+  ENVIRONMENT
+  HEALTHCARE
+  OTHER
+}
+
+enum SponsorshipStatus {
+  ACTIVE
+  PAUSED
+  CANCELLED
+}
+
+model Contact {
+  id        String   @id @default(cuid())
+  tenantId  String
+  email     String?
+  phone     String?
+  name      String?
+  type      String   @default("lead") // lead | donor | volunteer | partner | beneficiary
+  tags      Json     @default("[]")
+  source    String?  // signup | donation | import | event | ...
+  ownerId   String?  // staff member who owns the relationship
+  notes     String?  @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  activities ContactActivity[]
+
+  @@index([tenantId])
+  @@index([tenantId, type])
+  @@map("contacts")
+}
+
+model ContactActivity {
+  id        String   @id @default(cuid())
+  tenantId  String
+  contactId String
+  kind      String   // note | call | email | meeting | task
+  summary   String
+  createdAt DateTime @default(now())
+
+  contact   Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([contactId])
+  @@map("contact_activities")
+}
+
+model Campaign {
+  id           String         @id @default(cuid())
+  tenantId     String
+  slug         String
+  title        String
+  description  String?        @db.Text
+  goalAmount   Int            @default(0) // minor units
+  raisedAmount Int            @default(0) // denormalized; recomputed from donations
+  currency     String         @default("INR")
+  coverUrl     String?
+  status       CampaignStatus @default(DRAFT)
+  startsAt     DateTime?
+  endsAt       DateTime?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  @@unique([tenantId, slug])
+  @@index([tenantId, status])
+  @@map("campaigns")
+}
+
+model Sponsorship {
+  id              String            @id @default(cuid())
+  tenantId        String
+  type            SponsorshipType   @default(CHILD)
+  sponsorEmail    String
+  sponsorName     String?
+  sponsorUserId   String?
+  beneficiaryName String?
+  beneficiaryRef  String?           // anonymized beneficiary id
+  amount          Int               @default(0) // per-interval, minor units
+  currency        String            @default("INR")
+  interval        MembershipInterval @default(MONTHLY)
+  status          SponsorshipStatus @default(ACTIVE)
+  startedAt       DateTime          @default(now())
+  nextRenewalAt   DateTime?
+  createdAt       DateTime          @default(now())
+
+  @@index([tenantId])
+  @@index([tenantId, type])
+  @@map("sponsorships")
+}
+
+// ============================================================
+// Website + theme builder
+// ============================================================
+
+enum PageStatus {
+  DRAFT
+  PUBLISHED
+  SCHEDULED
+}
+
+model Page {
+  id          String     @id @default(cuid())
+  tenantId    String
+  slug        String
+  title       String
+  status      PageStatus @default(DRAFT)
+  blocks      Json       @default("[]") // ordered [{ id, type, props }]
+  seo         Json       @default("{}")
+  version     Int        @default(1)
+  publishedAt DateTime?
+  scheduledAt DateTime?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  revisions   PageRevision[]
+
+  @@unique([tenantId, slug])
+  @@index([tenantId, status])
+  @@map("pages")
+}
+
+model PageRevision {
+  id        String   @id @default(cuid())
+  tenantId  String
+  pageId    String
+  version   Int
+  blocks    Json     @default("[]")
+  createdAt DateTime @default(now())
+
+  page      Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([pageId])
+  @@map("page_revisions")
+}
+
+model Theme {
+  id        String   @id @default(cuid())
+  tenantId  String
+  slug      String
+  name      String
+  tokens    Json     @default("{}") // { colors, fonts, radius, spacing, mode }
+  source    String   @default("custom") // custom | imported | marketplace
+  version   Int      @default(1)
+  isActive  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, slug])
+  @@index([tenantId])
+  @@map("themes")
+}
+
+// ============================================================
+// PWA / push subscriptions
+// ============================================================
+
+model PushSubscription {
+  id        String   @id @default(cuid())
+  tenantId  String
+  userId    String?
+  endpoint  String
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, endpoint])
+  @@index([tenantId])
+  @@index([tenantId, userId])
+  @@map("push_subscriptions")
 }

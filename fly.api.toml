@@ -1,0 +1,59 @@
+# Fly.io config for the DXP API (NestJS).
+# Deploy from the repo ROOT so the Docker build context matches apps/api/Dockerfile:
+#   fly deploy --config fly.api.toml --dockerfile apps/api/Dockerfile
+#
+# Free-first notes:
+#   * auto_stop_machines + min_machines_running=0 => the machine scales to zero when
+#     idle, so you only burn compute while serving traffic (near-zero on trial credit).
+#   * DATABASE_URL / JWT_SECRET / etc. are set as SECRETS, not here (see docs/DEPLOY_FLY.md).
+#   * Redis is optional: the app boots and degrades gracefully if REDIS_URL is unset.
+
+app = "dxp-api"
+primary_region = "sin"  # change to your nearest region (e.g. "bom", "fra", "iad")
+
+[build]
+  dockerfile = "apps/api/Dockerfile"
+
+[deploy]
+  # Apply pending Prisma migrations once per release in an ephemeral machine,
+  # before the new version takes traffic.
+  release_command = "npx prisma migrate deploy"
+
+[env]
+  NODE_ENV = "production"
+  API_PORT = "4000"
+  API_HOST = "0.0.0.0"
+  # Free-first provider defaults (override with secrets when you upgrade a provider).
+  STORAGE_PROVIDER = "local"
+  EMAIL_PROVIDER = "log"
+  AI_PROVIDER = "echo"
+  PAYMENT_PROVIDER = "mock"
+  FX_PROVIDER = "seeded"
+  TRANSLATION_PROVIDER = "echo"
+  SPEECH_PROVIDER = "stub"
+  # CORS_ORIGINS, PLATFORM_BASE_DOMAIN, PUBLIC_WEB_URL are set per-environment via
+  # `fly secrets set` (they reference the web app's public URL).
+
+[http_service]
+  internal_port = 4000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 200
+    hard_limit = 250
+
+  # Health endpoint is public and returns 200 even when Redis is "degraded".
+  [[http_service.checks]]
+    method = "get"
+    path = "/api/health"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "20s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"  # Prisma + Nest boot comfortably here; 256mb is tight.

@@ -9,6 +9,7 @@ import {
   UpdateTemplateDto,
   IssueCertificateDto,
   DEFAULT_80G_TEMPLATE,
+  DEFAULT_COURSE_TEMPLATE,
 } from './dto/certificate.dto';
 
 @Injectable()
@@ -121,6 +122,57 @@ export class CertificateService {
       refType: 'donation',
       refId: donation.id,
     });
+  }
+
+  /** Ensures the tenant has a default course-completion template, creating it if absent. */
+  async ensureDefaultCourseCert() {
+    const tenantId = this.tenantContext.requireTenantId();
+    const existing = await this.prisma.scoped().certificateTemplate.findFirst({
+      where: { type: 'course' },
+    });
+    if (existing) return existing;
+    return this.prisma.scoped().certificateTemplate.create({
+      data: {
+        tenantId,
+        type: 'course',
+        name: 'Default Course Completion',
+        template: DEFAULT_COURSE_TEMPLATE,
+        fields: extractPlaceholders(DEFAULT_COURSE_TEMPLATE),
+      },
+    });
+  }
+
+  /**
+   * Idempotently issues a course-completion certificate for a learner. Returns the existing
+   * certificate if one was already issued for this (course, user) pair.
+   */
+  async issueCourseCertificate(params: {
+    courseId: string;
+    userId: string;
+    learnerName: string;
+    courseTitle: string;
+    orgName: string;
+  }) {
+    const existing = await this.prisma.scoped().certificate.findFirst({
+      where: { type: 'course', refType: 'enrollment', refId: `${params.courseId}:${params.userId}` },
+    });
+    if (existing) return existing;
+
+    const template = await this.ensureDefaultCourseCert();
+    return this.render(
+      template,
+      {
+        learnerName: params.learnerName,
+        courseTitle: params.courseTitle,
+        orgName: params.orgName,
+        issueDate: new Date().toISOString().slice(0, 10),
+      },
+      {
+        subjectName: params.learnerName,
+        refType: 'enrollment',
+        refId: `${params.courseId}:${params.userId}`,
+      },
+    );
   }
 
   private async render(

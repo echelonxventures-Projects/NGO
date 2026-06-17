@@ -13,10 +13,11 @@ describe('RBAC permission catalog', () => {
       expect(SYSTEM_ROLES.admin.permissions).toContain(PERMISSIONS.TENANT_ADMIN);
     });
 
-    it('limits the student role to read-only course/content access', () => {
+    it('limits the student role to read-only course/content access plus AI use', () => {
       expect(SYSTEM_ROLES.student.permissions).toEqual([
         PERMISSIONS.COURSE_READ,
         PERMISSIONS.CONTENT_READ,
+        PERMISSIONS.AI_USE,
       ]);
     });
 

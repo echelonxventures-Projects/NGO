@@ -1,0 +1,36 @@
+# Fly.io config for the DXP Web app (Next.js standalone).
+# Deploy from the repo ROOT:
+#   fly deploy --config fly.web.toml --dockerfile apps/web/Dockerfile \
+#     --build-arg NEXT_PUBLIC_API_URL=https://dxp-api.fly.dev/api
+#
+# IMPORTANT: NEXT_PUBLIC_API_URL is inlined at BUILD time, so it must be passed as a
+# build arg (here or on the CLI), not just a runtime secret.
+
+app = "dxp-web"
+primary_region = "sin"  # keep the same region as the API to minimize latency
+
+[build]
+  dockerfile = "apps/web/Dockerfile"
+  [build.args]
+    # Point the browser bundle at the public API URL. Override per environment.
+    NEXT_PUBLIC_API_URL = "https://dxp-api.fly.dev/api"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "3000"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 200
+    hard_limit = 250
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"  # Next standalone server is light; bump to 512mb if you see OOM.

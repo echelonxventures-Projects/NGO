@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import './globals.css';
 import { api } from '@/lib/api';
+import { PwaRegister } from './components/PwaRegister';
 
 // SSR metadata derived from tenant branding — satisfies the SEO requirement (per-tenant
 // title/description, OpenGraph) with no hardcoded org details.
@@ -35,7 +36,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       <head>
         <style dangerouslySetInnerHTML={{ __html: themeVars }} />
       </head>
-      <body>{children}</body>
+      <body>{children}<PwaRegister /></body>
     </html>
   );
 }

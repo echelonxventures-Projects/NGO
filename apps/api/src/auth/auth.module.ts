@@ -3,6 +3,9 @@ import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
+import { MfaService } from './mfa.service';
+import { OtpService } from './otp.service';
+import { OAuthService } from './oauth.service';
 
 @Module({
   imports: [
@@ -15,7 +18,7 @@ import { AuthController } from './auth.controller';
       }),
     }),
   ],
-  providers: [AuthService],
+  providers: [AuthService, MfaService, OtpService, OAuthService],
   controllers: [AuthController],
   exports: [JwtModule, AuthService],
 })
